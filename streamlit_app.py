@@ -1,78 +1,162 @@
 import datetime
-import random
-
-import altair as alt
-import numpy as np
+import sqlite3
 import pandas as pd
 import streamlit as st
+import altair as alt
 
-# Show app title and description.
+# Database functions
+def init_database():
+    """Initialize the SQLite database and create table if it doesn't exist"""
+    conn = sqlite3.connect('tickets.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS tickets (
+            id TEXT PRIMARY KEY,
+            issue TEXT NOT NULL,
+            status TEXT NOT NULL,
+            priority TEXT NOT NULL,
+            date_submitted TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    conn.commit()
+    conn.close()
+
+def save_ticket_to_db(ticket_data):
+    """Save a ticket to the database"""
+    conn = sqlite3.connect('tickets.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        INSERT INTO tickets (id, issue, status, priority, date_submitted)
+        VALUES (?, ?, ?, ?, ?)
+    ''', (
+        ticket_data['ID'],
+        ticket_data['Issue'],
+        ticket_data['Status'],
+        ticket_data['Priority'],
+        ticket_data['Date Submitted']
+    ))
+    
+    conn.commit()
+    conn.close()
+
+def load_tickets_from_db():
+    """Load all tickets from the database"""
+    conn = sqlite3.connect('tickets.db')
+    
+    df = pd.read_sql_query('''
+        SELECT id as ID, issue as Issue, status as Status, 
+               priority as Priority, date_submitted as "Date Submitted"
+        FROM tickets 
+        ORDER BY created_at DESC
+    ''', conn)
+    
+    conn.close()
+    return df
+
+def update_ticket_in_db(ticket_id, status, priority):
+    """Update ticket status and priority in database"""
+    conn = sqlite3.connect('tickets.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        UPDATE tickets 
+        SET status = ?, priority = ?
+        WHERE id = ?
+    ''', (status, priority, ticket_id))
+    
+    conn.commit()
+    conn.close()
+
+def get_next_ticket_number():
+    """Get the next ticket number from database"""
+    conn = sqlite3.connect('tickets.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT MAX(CAST(SUBSTR(id, 8) AS INTEGER)) FROM tickets')
+    result = cursor.fetchone()[0]
+    
+    conn.close()
+    
+    if result is None:
+        return 1001
+    else:
+        return result + 1
+
+# Initialize database
+init_database()
+
+# Show app title and description
 st.set_page_config(page_title="Support tickets", page_icon="🎫")
 st.title("🎫 Support tickets")
 st.write(
     """
-    This app shows how you can build an internal tool in Streamlit. Here, we are 
-    implementing a support ticket workflow. The user can create a ticket, edit 
-    existing tickets, and view some statistics.
+    This app shows how you can build an internal tool in Streamlit with database persistence. 
+    Here, we are implementing a support ticket workflow. The user can create a ticket, 
+    edit existing tickets, and view some statistics.
     """
 )
 
-# Create an empty dataframe for tickets
-if "df" not in st.session_state:
-    # Start with an empty dataframe with the correct structure
-    df = pd.DataFrame(columns=["ID", "Issue", "Status", "Priority", "Date Submitted"])
-    st.session_state.df = df
+# Load tickets from database
+if "df" not in st.session_state or st.button("🔄 Refresh from Database"):
+    st.session_state.df = load_tickets_from_db()
 
-# Show a section to add a new ticket.
+# Show a section to add a new ticket
 st.header("Add a ticket")
 
-# We're adding tickets via an `st.form` and some input widgets. If widgets are used
-# in a form, the app will only rerun once the submit button is pressed.
 with st.form("add_ticket_form"):
     issue = st.text_area("Describe the issue")
     priority = st.selectbox("Priority", ["High", "Medium", "Low"])
     submitted = st.form_submit_button("Submit")
 
 if submitted:
-    # Make a dataframe for the new ticket and append it to the dataframe in session
-    # state.
-    if len(st.session_state.df) > 0:
-        recent_ticket_number = int(max(st.session_state.df.ID).split("-")[1])
+    if not issue.strip():
+        st.error("⚠️ Por favor describe el problema antes de enviar el ticket")
     else:
-        recent_ticket_number = 1000  # Start with 1001 for the first ticket
-    
-    today = datetime.datetime.now().strftime("%Y-%m-%d")
-    df_new = pd.DataFrame(
-        [
-            {
-                "ID": f"TICKET-{recent_ticket_number+1}",
-                "Issue": issue,
-                "Status": "Open",
-                "Priority": priority,
-                "Date Submitted": today,
-            }
-        ]
-    )
+        # Get next ticket number
+        ticket_number = get_next_ticket_number()
+        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        
+        # Create ticket data
+        ticket_data = {
+            "ID": f"TICKET-{ticket_number}",
+            "Issue": issue,
+            "Status": "Open",
+            "Priority": priority,
+            "Date Submitted": today,
+        }
+        
+        # Save to database
+        try:
+            save_ticket_to_db(ticket_data)
+            st.success("✅ Ticket guardado en la base de datos!")
+            
+            # Show ticket details
+            df_new = pd.DataFrame([ticket_data])
+            st.dataframe(df_new, use_container_width=True, hide_index=True)
+            
+            # Refresh data from database
+            st.session_state.df = load_tickets_from_db()
+            st.rerun()
+            
+        except Exception as e:
+            st.error(f"❌ Error al guardar el ticket: {str(e)}")
 
-    # Show a little success message.
-    st.write("Ticket submitted! Here are the ticket details:")
-    st.dataframe(df_new, use_container_width=True, hide_index=True)
-    st.session_state.df = pd.concat([df_new, st.session_state.df], axis=0)
-
-# Show section to view and edit existing tickets in a table.
+# Show section to view and edit existing tickets
 st.header("Existing tickets")
 st.write(f"Number of tickets: `{len(st.session_state.df)}`")
 
-# Only show the info and data editor if there are tickets
 if len(st.session_state.df) > 0:
     st.info(
-        "You can edit the tickets by double clicking on a cell. Note how the plots below "
-        "update automatically! You can also sort the table by clicking on the column headers.",
+        "You can edit the status and priority by double clicking on the cells. "
+        "Changes will be saved to the database automatically!",
         icon="✍️",
     )
 
-    # Show the tickets dataframe with `st.data_editor`. This lets the user edit the table
-    # cells. The edited data is returned as a new dataframe.
+    # Show the tickets dataframe with st.data_editor
     edited_df = st.data_editor(
         st.session_state.df,
         use_container_width=True,
@@ -91,48 +175,93 @@ if len(st.session_state.df) > 0:
                 required=True,
             ),
         },
-        # Disable editing the ID and Date Submitted columns.
-        disabled=["ID", "Date Submitted"],
+        disabled=["ID", "Issue", "Date Submitted"],
     )
 
-    # Show some metrics and charts about the ticket.
+    # Check for changes and update database
+    if not edited_df.equals(st.session_state.df):
+        try:
+            # Update each changed row in the database
+            for idx, row in edited_df.iterrows():
+                original_row = st.session_state.df.iloc[idx]
+                if (row['Status'] != original_row['Status'] or 
+                    row['Priority'] != original_row['Priority']):
+                    update_ticket_in_db(row['ID'], row['Status'], row['Priority'])
+            
+            st.success("✅ Cambios guardados en la base de datos!")
+            st.session_state.df = edited_df
+            
+        except Exception as e:
+            st.error(f"❌ Error al actualizar: {str(e)}")
+
+    # Show some metrics and charts
     st.header("Statistics")
 
-    # Show metrics side by side using `st.columns` and `st.metric`.
+    # Show metrics side by side
     col1, col2, col3 = st.columns(3)
-    num_open_tickets = len(st.session_state.df[st.session_state.df.Status == "Open"])
-    col1.metric(label="Number of open tickets", value=num_open_tickets, delta=10)
-    col2.metric(label="First response time (hours)", value=5.2, delta=-1.5)
-    col3.metric(label="Average resolution time (hours)", value=16, delta=2)
+    num_open_tickets = len(edited_df[edited_df.Status == "Open"])
+    num_in_progress = len(edited_df[edited_df.Status == "In Progress"])
+    num_closed = len(edited_df[edited_df.Status == "Closed"])
+    
+    col1.metric(label="Open tickets", value=num_open_tickets)
+    col2.metric(label="In Progress", value=num_in_progress)
+    col3.metric(label="Closed tickets", value=num_closed)
 
-    # Show two Altair charts using `st.altair_chart`.
-    st.write("")
-    st.write("##### Ticket status per month")
+    # Show charts
+    st.write("##### Ticket status distribution")
     status_plot = (
         alt.Chart(edited_df)
         .mark_bar()
         .encode(
-            x="month(Date Submitted):O",
+            x="Status:N",
             y="count():Q",
-            xOffset="Status:N",
             color="Status:N",
         )
-        .configure_legend(
-            orient="bottom", titleFontSize=14, labelFontSize=14, titlePadding=5
-        )
+        .properties(height=300)
     )
     st.altair_chart(status_plot, use_container_width=True, theme="streamlit")
 
-    st.write("##### Current ticket priorities")
+    st.write("##### Priority distribution")
     priority_plot = (
         alt.Chart(edited_df)
         .mark_arc()
-        .encode(theta="count():Q", color="Priority:N")
-        .properties(height=300)
-        .configure_legend(
-            orient="bottom", titleFontSize=14, labelFontSize=14, titlePadding=5
+        .encode(
+            theta="count():Q", 
+            color="Priority:N"
         )
+        .properties(height=300)
     )
     st.altair_chart(priority_plot, use_container_width=True, theme="streamlit")
+
 else:
     st.info("No tickets yet. Create your first ticket above!", icon="🎫")
+
+# Database management section
+with st.expander("🔧 Database Management"):
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("📊 Export to CSV"):
+            csv = st.session_state.df.to_csv(index=False)
+            st.download_button(
+                label="⬇️ Download CSV",
+                data=csv,
+                file_name=f"tickets_export_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
+            )
+    
+    with col2:
+        if st.button("🗑️ Clear All Data", type="secondary"):
+            if st.session_state.get('confirm_delete', False):
+                conn = sqlite3.connect('tickets.db')
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM tickets')
+                conn.commit()
+                conn.close()
+                st.session_state.df = pd.DataFrame(columns=["ID", "Issue", "Status", "Priority", "Date Submitted"])
+                st.success("✅ All data cleared!")
+                st.session_state.confirm_delete = False
+                st.rerun()
+            else:
+                st.session_state.confirm_delete = True
+                st.warning("⚠️ Click again to confirm deletion of ALL data!")
