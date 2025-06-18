@@ -235,33 +235,3 @@ if len(st.session_state.df) > 0:
 
 else:
     st.info("No tickets yet. Create your first ticket above!", icon="🎫")
-
-# Database management section
-with st.expander("🔧 Database Management"):
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        if st.button("📊 Export to CSV"):
-            csv = st.session_state.df.to_csv(index=False)
-            st.download_button(
-                label="⬇️ Download CSV",
-                data=csv,
-                file_name=f"tickets_export_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv"
-            )
-    
-    with col2:
-        if st.button("🗑️ Clear All Data", type="secondary"):
-            if st.session_state.get('confirm_delete', False):
-                conn = sqlite3.connect('tickets.db')
-                cursor = conn.cursor()
-                cursor.execute('DELETE FROM tickets')
-                conn.commit()
-                conn.close()
-                st.session_state.df = pd.DataFrame(columns=["ID", "Issue", "Status", "Priority", "Date Submitted"])
-                st.success("✅ All data cleared!")
-                st.session_state.confirm_delete = False
-                st.rerun()
-            else:
-                st.session_state.confirm_delete = True
-                st.warning("⚠️ Click again to confirm deletion of ALL data!")
